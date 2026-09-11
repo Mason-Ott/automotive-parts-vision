@@ -1,52 +1,109 @@
 from pathlib import Path
-import cv2
-from paddleocr import PaddleOCR, draw_ocr
-from PIL import Image
-import matplotlib.pyplot as plt
+import json
 
-# Initialize PaddleOCR
+from PIL import Image, ImageDraw, ImageFont
+from paddleocr import PaddleOCR
+
+DATASET_PATH = Path("dataset")
+OUTPUT_PATH = Path("output")
+
+OUTPUT_PATH.mkdir(exist_ok=True)
+
 ocr = PaddleOCR(
-    use_angle_cls=True,
-    lang="en",
-    device="cpu",
-    enable_mkldnn=False,
+lang="en",
+device="gpu",
+use_doc_orientation_classify=False,
+use_doc_unwarping=False,
+use_textline_orientation=False,
 )
 
-dataset_path = Path("dataset")
-dataset = [path for path in dataset_path.iterdir() if path.is_file()]
+FONT_PATH = "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf"
+FONT = ImageFont.truetype(FONT_PATH, 18)
 
-for diagram_path in dataset[:3]:
-    print(f"\nProcessing: {diagram_path.name}")
+dataset = [
+path
+for path in DATASET_PATH.iterdir()
+if path.is_file()
+]
 
-    # Run OCR using ocr.ocr() method
-    result = ocr.ocr(str(diagram_path), cls=True)
-    
-    # Extract the first page result
-    result = result[0]
-    
-    # Extract boxes, texts, and scores
-    boxes = [line[0] for line in result]
-    txts = [line[1][0] for line in result]
-    scores = [line[1][1] for line in result]
-    
-    print(f"Detected {len(boxes)} text regions")
-    
-    # Load original image
-    image = Image.open(diagram_path).convert('RGB')
-    
-    # Draw OCR results
-    im_show = draw_ocr(
-        image, 
-        boxes, 
-        txts, 
-        scores,
-        font_path='C:\\Windows\\Fonts\\arial.ttf'
-    )
-    
-    # Display
-    plt.figure(figsize=(16, 10))
-    plt.imshow(im_show)
-    plt.title(diagram_path.name)
-    plt.axis("off")
-    plt.tight_layout()
-    plt.show()
+for image_path in dataset[:3]:
+
+    print(f"Processing: {image_path.name}")
+
+    results = ocr.predict(str(image_path))
+
+    for result in results:
+
+        data = result.json
+
+        if isinstance(data, str):
+            data = json.loads(data)
+
+        data = data["res"]
+
+        texts = data["rec_texts"]
+        scores = data["rec_scores"]
+        boxes = data["rec_polys"]
+
+        # Keep only detections with confidence > 0.8
+        detections = [
+            (box, text, float(score))
+            for box, text, score in zip(boxes, texts, scores)
+            if float(score) > 0.8
+        ]
+
+        print(f"Detected {len(detections)} text regions")
+
+        image = Image.open(image_path).convert("RGB")
+        draw = ImageDraw.Draw(image)
+
+        for box, text, score in detections:
+
+            print(f"  {score:.4f}  {text}")
+
+            points = [
+                (int(x), int(y))
+                for x, y in box
+            ]
+
+            x = min(point[0] for point in points)
+            y = min(point[1] for point in points)
+
+            # Draw bounding box
+            draw.line(
+                points + [points[0]],
+                fill="red",
+                width=3,
+            )
+
+            # Draw text and confidence
+            label = f"{text} ({score:.2f})"
+
+            bbox = draw.textbbox(
+                (x, y),
+                label,
+                font=FONT,
+            )
+
+            padding = 4
+
+            draw.rectangle(
+                (
+                    bbox[0] - padding,
+                    bbox[1] - padding,
+                    bbox[2] + padding,
+                    bbox[3] + padding,
+                ),
+                fill="red",
+            )
+
+            draw.text(
+                (x, y),
+                label,
+                fill="white",
+                font=FONT,
+            )
+
+        output_file = OUTPUT_PATH / image_path.name
+        image.save(output_file)
+
